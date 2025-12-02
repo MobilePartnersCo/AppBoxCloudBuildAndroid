@@ -1,8 +1,7 @@
-package kr.co.mobpa.sample.waveAppSuiteSdk
+package com.appbox.template
 
 import android.app.Application
 import kr.co.mobpa.waveAppSuiteSdk.AppBox
-import kr.co.mobpa.waveAppSuiteSdk.data.AppBoxWebConfig
 
 class MainApplicationKotlin : Application() {
     override fun onCreate() {
@@ -16,16 +15,19 @@ class MainApplicationKotlin : Application() {
 //        }
         // --------------------------------------------------------------
 
+        val projectId = BuildConfig.PROJECT_ID
+        val baseUrl = BuildConfig.BUILD_URL
+
         // --------------------------------------------------------------
         // AppBox 초기화
         // --------------------------------------------------------------
         AppBox.getInstance().initSDK(
             context = this,
-            baseUrl = "https://www.appboxapp.com",
-            projectId = "AAA-000000",
+            baseUrl = baseUrl,
+            projectId = projectId,
 //            webConfig = appBoxWebConfig,
             debugMode = true,
-            pushIcon = R.drawable.ic_launcher_background
+            pushIcon = R.mipmap.ic_launcher
         )
         // --------------------------------------------------------------
     }

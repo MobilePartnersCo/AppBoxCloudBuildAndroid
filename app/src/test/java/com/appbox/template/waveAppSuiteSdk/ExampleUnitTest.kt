@@ -1,4 +1,4 @@
-package kr.co.mobpa.sample.waveAppSuiteSdk
+package com.appbox.template.waveAppSuiteSdk
 
 import org.junit.Test
 

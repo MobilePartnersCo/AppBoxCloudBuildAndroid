@@ -1,11 +1,9 @@
-package kr.co.mobpa.sample.waveAppSuiteSdk
+package com.appbox.template
 
 import android.os.Bundle
 import android.util.Log
 import androidx.appcompat.app.AppCompatActivity
 import kr.co.mobpa.waveAppSuiteSdk.AppBox
-import kr.co.mobpa.waveAppSuiteSdk.data.AppBoxIntro
-import kr.co.mobpa.waveAppSuiteSdk.data.AppBoxIntroItems
 
 class MainActivityKotlin : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
