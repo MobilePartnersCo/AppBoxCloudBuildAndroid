@@ -7,12 +7,13 @@ plugins {
 
 val configFile = file("config.json") // 앱 모듈 폴더(app/) 내에 생성됨을 가정
 
+// 기본값 설정 (중요: 값이 비어있으면 빌드 에러가 발생하므로 안전한 기본값 설정)
 var myAppId = "" // 기본 패키지명
 var myAppName = "" // 기본 앱 이름
 var myProjectId = "" // 기본 프로젝트 ID
 var myLoadingUrl = "" // 기본 로딩 URL
-var myAppVersionName = "1.0.1" // 앱버전 명
-var myAppVersionCode = 1 // 앱버전 코드
+var myAppVersionName = "1.0.1" // 기본 앱버전 명
+var myAppVersionCode = 1 // 기본 앱버전 코드
 
 if (configFile.exists()) {
     try {
@@ -57,17 +58,28 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // --------------------------------------------------------------------
-        // 4. 리소스 및 상수 주입
-        // --------------------------------------------------------------------
-
         // 앱 이름 (AndroidManifest에서 @string/dynamic_app_name 사용)
         resValue("string", "dynamic_app_name", myAppName)
 
         // Kotlin 코드에서 사용할 상수 (BuildConfig 클래스에 생성됨)
-        // 주의: 문자열 값은 이스케이프(\") 처리가 필요함
         buildConfigField("String", "PROJECT_ID", "\"$myProjectId\"")
         buildConfigField("String", "BUILD_URL", "\"$myLoadingUrl\"")
+
+        // AAB(App Bundle) 파일명 변경을 위한 archivesBaseName 설정
+        val safeAppName = myAppName.replace(" ", "_")
+        project.setProperty("archivesBaseName", "${safeAppName}_${myAppVersionName}_${myAppVersionCode}")
+    }
+
+    // APK 파일명 강제 변경
+    applicationVariants.configureEach {
+        val variant = this
+        variant.outputs.forEach { output ->
+            val outputImpl = output as com.android.build.gradle.internal.api.BaseVariantOutputImpl
+            val safeAppName = myAppName.replace(" ", "_")
+            // 원하는 형식: {앱이름}_{버전명}_{버전코드}.apk
+            val newFileName = "${safeAppName}_${myAppVersionName}_${myAppVersionCode}.apk"
+            outputImpl.outputFileName = newFileName
+        }
     }
 
     buildFeatures {

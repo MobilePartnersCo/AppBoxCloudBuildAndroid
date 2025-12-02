@@ -1,21 +1,32 @@
 steps:
   # ==================================================================
-  # Step 1: Git 소스 다운로드 (자동 수행됨)
+  # Step 0: Gradle 캐시 불러오기 (빌드 속도 단축의 핵심)
   # ==================================================================
-  # Cloud Build Trigger를 사용하면 이 단계는 자동으로 수행되어
-  # 현재 작업 공간(workspace)에 소스 코드가 깔려있는 상태로 시작합니다.
+  # GCS 버킷의 cache 폴더에서 이전 빌드 정보를 가져옵니다.
+  # 실패해도(첫 빌드라 파일이 없어도) 에러가 나지 않도록 || echo 처리합니다.
+  - name: 'gcr.io/cloud-builders/gsutil'
+    id: 'Restore Cache'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "♻️ Restoring Gradle cache..."
+        gsutil cp gs://${_DEST_BUCKET}/cache/gradle_cache.tar.gz /tmp/cache.tar.gz || echo "No cache found."
+        
+        if [ -f /tmp/cache.tar.gz ]; then
+          tar -xzf /tmp/cache.tar.gz -C /root/
+          echo "✅ Cache restored."
+        fi
 
   # ==================================================================
-  # Step 2: 설정 파일(config.json) 다운로드 -> app/config.json 으로 저장
+  # Step 1: 설정 파일(config.json) 주입
   # ==================================================================
   - name: 'gcr.io/cloud-builders/gsutil'
     id: 'Inject Config'
-    # 관리자가 넘겨준 GCS 경로(${_CONFIG_GCS_PATH})에서 파일을 받아
-    # app 모듈 폴더 안에 'config.json' 이름으로 저장합니다.
     args: ['cp', '${_CONFIG_GCS_PATH}', 'app/config.json']
 
   # ==================================================================
-  # Step 3: 앱 아이콘 다운로드 -> 리소스 폴더 덮어쓰기
+  # Step 2: 앱 아이콘 주입
   # ==================================================================
   - name: 'gcr.io/cloud-builders/gsutil'
     id: 'Inject Icon'
@@ -23,47 +34,64 @@ steps:
     args:
       - '-c'
       - |
-        echo "Downloading icon from ${_ICON_GCS_PATH}..."
-        
-        # 1. 혹시 폴더가 없으면 에러나니까 생성 (안전장치)
         mkdir -p app/src/main/res/mipmap-xxxhdpi
-        
-        # 2. GCS에서 아이콘 다운로드하여 기존 ic_launcher.png 덮어쓰기
         gsutil cp ${_ICON_GCS_PATH} app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
-        
-        # 3. 라운드 아이콘도 동일한 이미지로 복사 (임시 처리)
-        # (제대로 하려면 별도 라운드 이미지를 GCS에서 받거나, 이미지 처리 도구 사용)
+        # 라운드 아이콘 처리 (복사)
         cp app/src/main/res/mipmap-xxxhdpi/ic_launcher.png app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png
-        
-        echo "✅ Icon injection complete."
 
   # ==================================================================
-  # Step 4: 안드로이드 빌드 (챕터 1에서 만든 이미지 사용)
+  # Step 3: 안드로이드 빌드 (APK + AAB 생성)
   # ==================================================================
-  # 아래 주소는 챕터 1에서 성공했을 때 나온 그 주소를 넣어야 합니다.
   - name: 'asia-northeast3-docker.pkg.dev/appbox-479702/appbox-artifact-registry/android-builder:latest'
-    id: 'Build APK'
+    id: 'Build Artifacts'
     entrypoint: 'bash'
     args:
       - '-c'
       - |
         chmod +x gradlew
-        # Release 버전 빌드 (APK 생성)
-        ./gradlew assembleRelease
+        # --build-cache: 캐시 사용 옵션
+        # assembleRelease: APK 생성
+        # bundleRelease: AAB 생성
+        ./gradlew assembleRelease bundleRelease --build-cache
 
   # ==================================================================
-  # Step 5: 결과물(APK) GCS 업로드
+  # Step 4: Gradle 캐시 저장 (다음 빌드를 위해)
+  # ==================================================================
+  - name: 'gcr.io/cloud-builders/gsutil'
+    id: 'Save Cache'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "💾 Saving Gradle cache..."
+        # .gradle 폴더를 압축
+        tar -czf /tmp/cache.tar.gz -C /root/ .gradle
+        # GCS에 업로드 (덮어쓰기)
+        gsutil cp /tmp/cache.tar.gz gs://${_DEST_BUCKET}/cache/gradle_cache.tar.gz
+        echo "✅ Cache saved."
+
+  # ==================================================================
+  # Step 5: 결과물(APK, AAB) 업로드
   # ==================================================================
   - name: 'gcr.io/cloud-builders/gsutil'
     id: 'Upload Artifacts'
-    # 빌드된 APK를 관리자가 지정한 결과 버킷(${_OUTPUT_GCS_PATH})으로 업로드
-    args: ['cp', 'app/build/outputs/apk/release/*.apk', '${_OUTPUT_GCS_PATH}']
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "🚀 Uploading artifacts..."
+        # 파일명이 바뀌었더라도 확장자(*.apk, *.aab)로 모두 잡아서 업로드합니다.
+        gsutil cp app/build/outputs/apk/release/*.apk ${_OUTPUT_GCS_PATH}
+        gsutil cp app/build/outputs/bundle/release/*.aab ${_OUTPUT_GCS_PATH}
 
-# 실행 시 외부(관리자 콘솔)에서 주입받을 변수들
+# 변수 정의
 substitutions:
-  _CONFIG_GCS_PATH: "gs://버킷명/경로/기본_설정.json"
-  _ICON_GCS_PATH: "gs://버킷명/경로/기본_아이콘.png"
-  _OUTPUT_GCS_PATH: "gs://버킷명/빌드결과/"
+  _CONFIG_GCS_PATH: "gs://버킷명/경로/설정.json"
+  _ICON_GCS_PATH: "gs://버킷명/경로/아이콘.png"
+  _OUTPUT_GCS_PATH: "gs://버킷명/결과물폴더/"
+  _DEST_BUCKET: "appbox-479702_cloudbuild" # 캐시를 저장할 버킷 이름
 
 options:
+  machineType: 'E2_HIGHCPU_8' # 고성능 머신 사용 (빌드 시간 단축 필수)
   logging: CLOUD_LOGGING_ONLY
+  timeout: 3600s
