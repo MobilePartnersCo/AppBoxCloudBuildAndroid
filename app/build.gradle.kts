@@ -70,6 +70,15 @@ android {
         project.setProperty("archivesBaseName", "${safeAppName}_${myAppVersionName}_${myAppVersionCode}")
     }
 
+    signingConfigs {
+        create("release") {
+            storeFile = file("__KEYSTORE_PATH__")
+            storePassword = "__KEYSTORE_STORE_PASSWORD__"
+            keyAlias = "__KEY_ALIAS__"
+            keyPassword = "__KEY_PASSWORD__"
+        }
+    }
+
     // APK 파일명 강제 변경
     applicationVariants.configureEach {
         val variant = this
@@ -88,7 +97,10 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
+            isMinifyEnabled = true
+            isShrinkResources = true
+            isDebuggable = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
