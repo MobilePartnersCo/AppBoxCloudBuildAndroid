@@ -1,0 +1,69 @@
+steps:
+  # ==================================================================
+  # Step 1: Git 소스 다운로드 (자동 수행됨)
+  # ==================================================================
+  # Cloud Build Trigger를 사용하면 이 단계는 자동으로 수행되어
+  # 현재 작업 공간(workspace)에 소스 코드가 깔려있는 상태로 시작합니다.
+
+  # ==================================================================
+  # Step 2: 설정 파일(config.json) 다운로드 -> app/config.json 으로 저장
+  # ==================================================================
+  - name: 'gcr.io/cloud-builders/gsutil'
+    id: 'Inject Config'
+    # 관리자가 넘겨준 GCS 경로(${_CONFIG_GCS_PATH})에서 파일을 받아
+    # app 모듈 폴더 안에 'config.json' 이름으로 저장합니다.
+    args: ['cp', '${_CONFIG_GCS_PATH}', 'app/config.json']
+
+  # ==================================================================
+  # Step 3: 앱 아이콘 다운로드 -> 리소스 폴더 덮어쓰기
+  # ==================================================================
+  - name: 'gcr.io/cloud-builders/gsutil'
+    id: 'Inject Icon'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "Downloading icon from ${_ICON_GCS_PATH}..."
+        
+        # 1. 혹시 폴더가 없으면 에러나니까 생성 (안전장치)
+        mkdir -p app/src/main/res/mipmap-xxxhdpi
+        
+        # 2. GCS에서 아이콘 다운로드하여 기존 ic_launcher.png 덮어쓰기
+        gsutil cp ${_ICON_GCS_PATH} app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+        
+        # 3. 라운드 아이콘도 동일한 이미지로 복사 (임시 처리)
+        # (제대로 하려면 별도 라운드 이미지를 GCS에서 받거나, 이미지 처리 도구 사용)
+        cp app/src/main/res/mipmap-xxxhdpi/ic_launcher.png app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png
+        
+        echo "✅ Icon injection complete."
+
+  # ==================================================================
+  # Step 4: 안드로이드 빌드 (챕터 1에서 만든 이미지 사용)
+  # ==================================================================
+  # 아래 주소는 챕터 1에서 성공했을 때 나온 그 주소를 넣어야 합니다.
+  - name: 'asia-northeast3-docker.pkg.dev/appbox-479702/appbox-artifact-registry/android-builder:latest'
+    id: 'Build APK'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        chmod +x gradlew
+        # Release 버전 빌드 (APK 생성)
+        ./gradlew assembleRelease
+
+  # ==================================================================
+  # Step 5: 결과물(APK) GCS 업로드
+  # ==================================================================
+  - name: 'gcr.io/cloud-builders/gsutil'
+    id: 'Upload Artifacts'
+    # 빌드된 APK를 관리자가 지정한 결과 버킷(${_OUTPUT_GCS_PATH})으로 업로드
+    args: ['cp', 'app/build/outputs/apk/release/*.apk', '${_OUTPUT_GCS_PATH}']
+
+# 실행 시 외부(관리자 콘솔)에서 주입받을 변수들
+substitutions:
+  _CONFIG_GCS_PATH: "gs://버킷명/경로/기본_설정.json"
+  _ICON_GCS_PATH: "gs://버킷명/경로/기본_아이콘.png"
+  _OUTPUT_GCS_PATH: "gs://버킷명/빌드결과/"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
