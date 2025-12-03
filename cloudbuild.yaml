@@ -284,15 +284,15 @@ steps:
 
 # 변수 정의
 substitutions:
-  _PROJECT_ID: "AAA-000000"
-  _APP_NAME: "앱박스"
-  _PACKAGE_NAME: "kr.co.mobpa.sample.waveAppSuiteSdk"
-  _LOADING_URL: "https://www.appboxapp.com/"
+  _PROJECT_ID: ""
+  _APP_NAME: ""
+  _PACKAGE_NAME: ""
+  _LOADING_URL: ""
   _VERSION_NAME: "1.0.1"
   _VERSION_CODE: "1"
-  _APP_ICON_URL: "https://via.placeholder.com/150"
-  _OUTPUT_GCS_PATH: "gs://my-bucket/output/"
-  _DEST_BUCKET: "my-bucket"
+  _APP_ICON_URL: ""
+  _OUTPUT_GCS_PATH: ""
+  _DEST_BUCKET: ""
 
 timeout: 3600s
 

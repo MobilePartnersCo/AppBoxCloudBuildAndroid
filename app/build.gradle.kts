@@ -3,6 +3,8 @@ import groovy.json.JsonSlurper
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.jetbrains.kotlin.android)
+    alias(libs.plugins.jetbrains.kotlin.kapt)
+    alias(libs.plugins.compose.compiler)
 }
 
 val configFile = file("config.json")
