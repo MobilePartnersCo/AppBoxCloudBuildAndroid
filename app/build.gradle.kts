@@ -7,17 +7,16 @@ plugins {
 
 val configFile = file("config.json")
 
-// 기본값 설정 (중요: 값이 비어있으면 빌드 에러가 발생하므로 안전한 기본값 설정)
-var myAppId = "kr.co.mobpa.sample.waveAppSuiteSdk" // 기본 패키지명
-var myAppName = "앱박스" // 기본 앱 이름
-var myProjectId = "AAA-000000" // 기본 프로젝트 ID
-var myLoadingUrl = "https://www.appboxapp.com" // 기본 로딩 URL
+// 기본값 설정
+var myAppId = "" // 기본 패키지명
+var myAppName = "" // 기본 앱 이름
+var myProjectId = "" // 기본 프로젝트 ID
+var myLoadingUrl = "" // 기본 로딩 URL
 var myAppVersionName = "1.0.1" // 기본 앱버전 명
 var myAppVersionCode = 1 // 기본 앱버전 코드
 
 if (configFile.exists()) {
     try {
-        println("⚙️ 로컬 설정 파일 발견: ${configFile.absolutePath}")
         val json = JsonSlurper().parseText(configFile.readText()) as Map<String, Any>
 
         myAppId = (json["packageName"] as? String) ?: myAppId
@@ -26,23 +25,12 @@ if (configFile.exists()) {
         myLoadingUrl = (json["loadingUrl"] as? String) ?: myLoadingUrl
         myAppVersionName = (json["appVersionName"] as? String) ?: myAppVersionName
         myAppVersionCode = (json["appVersionCode"] as? Int) ?: myAppVersionCode
-
-        println(
-            """
-            ✅ [Config] 설정 로드 완료
-            - PackageName:     $myAppId
-            - AppName:         $myAppName
-            - ProjectID:       $myProjectId
-            - LoadingUrl:      $myLoadingUrl
-            - AppVersionName:  $myAppVersionName
-            - AppVersionCode:  $myAppVersionCode
-        """.trimIndent()
-        )
+        println("설정 파일 파싱 성공")
     } catch (e: Exception) {
-        println("⚠️ 설정 파일 파싱 실패: ${e.message}")
+        println("설정 파일 파싱 실패: ${e.message}")
     }
 } else {
-    println("⚠️ 설정 파일이 없습니다. 기본값으로 빌드합니다.")
+    println("설정 파일이 없습니다.")
 }
 
 android {
@@ -84,9 +72,16 @@ android {
 
     buildFeatures {
         buildConfig = true
+        compose = true
     }
 
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("release")
+            isMinifyEnabled = false
+            isShrinkResources = false
+            isDebuggable = true
+        }
         release {
             signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = true
@@ -120,9 +115,5 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 
-    // --------------------------------------------------------------
-    // implementation 선언
-    // --------------------------------------------------------------
     implementation("com.github.MobilePartnersCo:AppBoxSDKPackage:all-v1.0.36")
-    // --------------------------------------------------------------
 }
