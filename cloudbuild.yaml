@@ -65,7 +65,6 @@ steps:
     args:
       - '-c'
       - |
-        # 중요: ${SECRET_ID} 대신 $SECRET_ID 사용 (Cloud Build 치환 방지)
         SECRET_ID="keystore-${_PROJECT_ID}"
         echo "🔐 Checking Secret Manager for: $SECRET_ID"
         
