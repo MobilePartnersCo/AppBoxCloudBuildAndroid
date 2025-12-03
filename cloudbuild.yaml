@@ -66,9 +66,9 @@ steps:
       - '-c'
       - |
         SECRET_ID="keystore-${_PROJECT_ID}"
-        echo "🔐 Checking Secret Manager for: $SECRET_ID"
+        echo "🔐 Checking Secret Manager for: $$SECRET_ID"
         
-        if gcloud secrets versions access latest --secret="$SECRET_ID" --out-file="app/keystore.jks"; then
+        if gcloud secrets versions access latest --secret="$$SECRET_ID" --out-file="app/keystore.jks"; then
           echo "✅ Keystore found and downloaded."
         else
           echo "⚠️ Keystore not found. Marking for creation."
@@ -125,8 +125,8 @@ steps:
           SECRET_ID="keystore-${_PROJECT_ID}"
           echo "📤 Uploading new keystore to Secret Manager..."
         
-          gcloud secrets create "$SECRET_ID" --replication-policy="automatic" || true
-          gcloud secrets versions add "$SECRET_ID" --data-file="app/keystore.jks"
+          gcloud secrets create "$$SECRET_ID" --replication-policy="automatic" || true
+          gcloud secrets versions add "$$SECRET_ID" --data-file="app/keystore.jks"
         
           echo "✅ Keystore saved to Secret Manager."
         fi
