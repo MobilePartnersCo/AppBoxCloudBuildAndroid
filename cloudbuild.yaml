@@ -1,7 +1,7 @@
 steps:
-  # ==================================================================
-  # Step 0: Gradle 캐시 복원 (속도 최적화)
-  # ==================================================================
+  # -----------------------------------------------------------------------------
+  # Step 0: Gradle 캐시 복원 (빌드 속도 최적화)
+  # -----------------------------------------------------------------------------
   - name: 'gcr.io/cloud-builders/gsutil'
     id: 'Restore Cache'
     entrypoint: 'bash'
@@ -14,12 +14,11 @@ steps:
           echo "✅ Cache restored."
         fi
 
-  # ==================================================================
-  # Step 1: config.json 동적 생성 및 유효성 검사 (환경 변수 방식 적용)
-  # ==================================================================
+  # -----------------------------------------------------------------------------
+  # Step 1: config.json 동적 생성 및 입력값 유효성 검사
+  # -----------------------------------------------------------------------------
   - name: 'ubuntu'
     id: 'Create Config'
-    # [핵심] Cloud Build 변수를 리눅스 환경 변수로 매핑 (가장 안전한 방법)
     env:
       - 'PROJECT_ID=${_PROJECT_ID}'
       - 'APP_NAME=${_APP_NAME}'
@@ -30,7 +29,7 @@ steps:
     script: |
       echo "🔍 Validating inputs..."
       
-      # 환경 변수($VAR)를 검사
+      # 필수 환경 변수 검사
       if [ -z "$PROJECT_ID" ]; then echo "❌ Error: PROJECT_ID is missing!"; exit 1; fi
       if [ -z "$APP_NAME" ]; then echo "❌ Error: APP_NAME is missing!"; exit 1; fi
       if [ -z "$PACKAGE_NAME" ]; then echo "❌ Error: PACKAGE_NAME is missing!"; exit 1; fi
@@ -40,7 +39,7 @@ steps:
       
       echo "✅ All inputs are valid. Creating config.json..."
       
-      # 환경 변수를 사용하여 JSON 생성
+      # JSON 파일 생성
       cat <<EOF > app/config.json
       {
         "projectId": "$PROJECT_ID",
@@ -51,46 +50,47 @@ steps:
         "appVersionCode": $VERSION_CODE
       }
       EOF
-
-      # [검증] 파일 생성 확인
+      
+      # 생성 결과 확인
       if [ ! -s app/config.json ]; then
         echo "❌ Error: Failed to create config.json"
         exit 1
       fi
       
-      # 생성된 내용 확인
       cat app/config.json
 
-  # ==================================================================
-  # Step 2: 앱 아이콘 다운로드 (실패 시 중단)
-  # ==================================================================
+  # -----------------------------------------------------------------------------
+  # Step 2: 앱 아이콘 다운로드
+  # -----------------------------------------------------------------------------
   - name: 'gcr.io/cloud-builders/curl'
     id: 'Download Icon'
     entrypoint: 'bash'
     args:
       - '-c'
       - |
+        if [ -z "${_APP_ICON_URL}" ]; then echo "❌ Error: _APP_ICON_URL is missing!"; exit 1; fi
+        
         echo "Downloading icon from ${_APP_ICON_URL}..."
         mkdir -p app/src/main/res/mipmap-xxxhdpi
         
-        # curl 실패 시(-f) 에러 코드 리턴
+        # 아이콘 다운로드 및 유효성 검사
         if ! curl -f -L -o app/src/main/res/mipmap-xxxhdpi/ic_launcher.png "${_APP_ICON_URL}"; then
            echo "❌ Error: Failed to download icon from ${_APP_ICON_URL}"
            exit 1
         fi
         
-        # 파일 크기 0 체크
         if [ ! -s app/src/main/res/mipmap-xxxhdpi/ic_launcher.png ]; then
            echo "❌ Error: Icon file is empty"
            exit 1
         fi
 
+        # 라운드 아이콘 복사
         cp app/src/main/res/mipmap-xxxhdpi/ic_launcher.png app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png
-        echo "✅ Icon downloaded successfully."
+        echo "✅ Icon setup complete."
 
-  # ==================================================================
-  # Step 2-A: 앱 서명키 확인 및 다운로드
-  # ==================================================================
+  # -----------------------------------------------------------------------------
+  # Step 3: 앱 서명키(Keystore) 확인 및 다운로드 (Secret Manager)
+  # -----------------------------------------------------------------------------
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     id: 'Check/Download Keystore'
     entrypoint: 'bash'
@@ -100,8 +100,6 @@ steps:
         KEY_SECRET_ID="keystore-${_PROJECT_ID}"
         echo "🔐 Checking Secret Manager for: $$KEY_SECRET_ID"
         
-        # 권한 에러 등으로 실패할 수 있으나, '없음'과 '권한없음'을 구분하기 위해
-        # 여기서는 실패하더라도 다음 단계(생성 시도)로 넘어가되, 최종적으로 키 파일이 없으면 중단하도록 설계
         if gcloud secrets versions access latest --secret="$$KEY_SECRET_ID" --out-file="app/keystore.jks"; then
           echo "✅ Keystore found and downloaded."
         else
@@ -109,9 +107,9 @@ steps:
           touch create_new_keystore 
         fi
 
-  # ==================================================================
-  # Step 2-B: 앱 서명키 생성 (없는 경우)
-  # ==================================================================
+  # -----------------------------------------------------------------------------
+  # Step 4: 앱 서명키 생성 (없는 경우)
+  # -----------------------------------------------------------------------------
   - name: 'asia-northeast3-docker.pkg.dev/appbox-479702/appbox-artifact-registry/android-builder:latest'
     id: 'Generate Keystore'
     entrypoint: 'bash'
@@ -121,6 +119,7 @@ steps:
         if [ -f create_new_keystore ]; then
           echo "🆕 Generating new keystore..."
         
+          # 비밀번호 생성 (해싱)
           SALT="mobpa_secret_salt_v1"
           RAW_HASH=$(echo -n "${_PROJECT_ID}$$SALT" | sha256sum)
           ALIAS="key_$(echo -n $$RAW_HASH | cut -c1-10)"
@@ -128,7 +127,6 @@ steps:
         
           echo "Generated Alias: $$ALIAS"
         
-          # keytool 실패 시 즉시 종료 (set -e 효과)
           if ! keytool -genkeypair -v \
             -keystore app/keystore.jks \
             -alias "$$ALIAS" \
@@ -142,15 +140,16 @@ steps:
              exit 1
           fi
         
+          # 생성 정보 임시 저장
           echo "$$ALIAS" > keystore_alias
           echo "$$PASS" > keystore_pass
         
           echo "✅ New keystore generated."
         fi
 
-  # ==================================================================
-  # Step 2-C: 생성된 키 Secret Manager 업로드
-  # ==================================================================
+  # -----------------------------------------------------------------------------
+  # Step 5: 생성된 서명키 Secret Manager에 업로드
+  # -----------------------------------------------------------------------------
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     id: 'Upload Keystore Secret'
     entrypoint: 'bash'
@@ -161,18 +160,17 @@ steps:
           KEY_SECRET_ID="keystore-${_PROJECT_ID}"
           echo "📤 Uploading new keystore to Secret Manager..."
         
-          # 업로드 실패 시 경고만 출력 (빌드는 계속 진행 가능하도록)
           gcloud secrets create "$$KEY_SECRET_ID" --replication-policy="automatic" || true
           if ! gcloud secrets versions add "$$KEY_SECRET_ID" --data-file="app/keystore.jks"; then
-             echo "⚠️ Warning: Failed to save keystore to Secret Manager. Build will continue but key is not backed up."
+             echo "⚠️ Warning: Failed to save keystore to Secret Manager."
           else
              echo "✅ Keystore saved to Secret Manager."
           fi
         fi
 
-  # ==================================================================
-  # [New] Step 2-Check: 필수 파일 최종 확인 (이거 없으면 빌드 안 함)
-  # ==================================================================
+  # -----------------------------------------------------------------------------
+  # Step 6: 빌드 필수 파일 최종 점검
+  # -----------------------------------------------------------------------------
   - name: 'ubuntu'
     id: 'Pre-Build Check'
     script: |
@@ -184,9 +182,9 @@ steps:
       
       echo "✅ All required files are present. Proceeding to build."
 
-  # ==================================================================
-  # Step 2-D: Gradle에 서명 정보 주입
-  # ==================================================================
+  # -----------------------------------------------------------------------------
+  # Step 7: Gradle 설정에 서명 정보 주입
+  # -----------------------------------------------------------------------------
   - name: 'ubuntu'
     id: 'Inject Signing Config'
     entrypoint: 'bash'
@@ -196,6 +194,7 @@ steps:
         echo "💉 Injecting signing configuration..."
         GRADLE_FILE="app/build.gradle.kts"
         
+        # 키 생성 여부에 따라 비밀번호 출처 결정
         if [ -f create_new_keystore ]; then
           ALIAS=$(cat keystore_alias)
           PASS=$(cat keystore_pass)
@@ -206,6 +205,7 @@ steps:
           PASS="$(echo -n $$RAW_HASH | cut -c11-26)A1!"
         fi
         
+        # Gradle 파일 내용 치환
         sed -i "s|__KEYSTORE_PATH__|keystore.jks|g" $$GRADLE_FILE
         sed -i "s|__KEYSTORE_STORE_PASSWORD__|$$PASS|g" $$GRADLE_FILE
         sed -i "s|__KEY_ALIAS__|$$ALIAS|g" $$GRADLE_FILE
@@ -213,9 +213,9 @@ steps:
         
         echo "✅ Signing config injected."
 
-  # ==================================================================
-  # Step 2-E: 프로젝트 소스 백업
-  # ==================================================================
+  # -----------------------------------------------------------------------------
+  # Step 8: 프로젝트 소스 백업 (비공개 버킷)
+  # -----------------------------------------------------------------------------
   - name: 'gcr.io/cloud-builders/gsutil'
     id: 'Archive Source'
     entrypoint: 'bash'
@@ -226,15 +226,15 @@ steps:
         tar -czf /tmp/source_backup.tar.gz --exclude=.git --exclude=.gradle --exclude=app/build \
           --exclude=create_new_keystore --exclude=keystore_alias --exclude=keystore_pass .
         
-        RAW_GCS_PATH="${_OUTPUT_GCS_PATH}"
-        GCS_ROOT="$${RAW_GCS_PATH%/}"
-        TARGET_PATH="$$GCS_ROOT/${_VERSION_NAME}/source/"
+        # 백업 경로: {비공개버킷}/{프로젝트ID}/{버전}/source/
+        TARGET_PATH="gs://${_PRIVATE_BUCKET}/${_PROJECT_ID}/${_VERSION_NAME}/source/"
+        
         echo "📤 Uploading source to: $$TARGET_PATH"
         gsutil cp /tmp/source_backup.tar.gz "$$TARGET_PATH"
 
-  # ==================================================================
-  # Step 3: 안드로이드 빌드
-  # ==================================================================
+  # -----------------------------------------------------------------------------
+  # Step 9: Android 빌드 수행 (APK & AAB)
+  # -----------------------------------------------------------------------------
   - name: 'asia-northeast3-docker.pkg.dev/appbox-479702/appbox-artifact-registry/android-builder:latest'
     id: 'Build Artifacts'
     entrypoint: 'bash'
@@ -244,9 +244,9 @@ steps:
         chmod +x gradlew
         ./gradlew assembleRelease bundleRelease --build-cache
 
-  # ==================================================================
-  # Step 4: Gradle 캐시 저장
-  # ==================================================================
+  # -----------------------------------------------------------------------------
+  # Step 10: Gradle 캐시 저장
+  # -----------------------------------------------------------------------------
   - name: 'gcr.io/cloud-builders/gsutil'
     id: 'Save Cache'
     entrypoint: 'bash'
@@ -258,21 +258,19 @@ steps:
         gsutil cp /tmp/cache.tar.gz gs://${_DEST_BUCKET}/cache/gradle_cache.tar.gz
         echo "✅ Cache saved."
 
-  # ==================================================================
-  # Step 5: 결과물 업로드
-  # ==================================================================
+  # -----------------------------------------------------------------------------
+  # Step 11: 결과물 업로드 (공개 버킷)
+  # -----------------------------------------------------------------------------
   - name: 'gcr.io/cloud-builders/gsutil'
     id: 'Upload Artifacts'
     entrypoint: 'bash'
     args:
       - '-c'
       - |
-        echo "🚀 Uploading artifacts..."
+        echo "🚀 Uploading artifacts to Public Bucket..."
         
-        RAW_GCS_PATH="${_OUTPUT_GCS_PATH}"
-        GCS_ROOT="$${RAW_GCS_PATH%/}"
-        
-        BASE_PATH="$$GCS_ROOT/${_VERSION_NAME}"
+        # 업로드 경로: {공개버킷}/{프로젝트ID}/{버전}/[apk|aab]/
+        BASE_PATH="gs://${_PUBLIC_BUCKET}/${_PROJECT_ID}/${_VERSION_NAME}"
         APK_PATH="$$BASE_PATH/apk/"
         AAB_PATH="$$BASE_PATH/aab/"
         
@@ -282,7 +280,9 @@ steps:
         gsutil cp app/build/outputs/apk/release/*.apk "$$APK_PATH"
         gsutil cp app/build/outputs/bundle/release/*.aab "$$AAB_PATH"
 
-# 변수 정의
+# -----------------------------------------------------------------------------
+# Substitutions (기본값)
+# -----------------------------------------------------------------------------
 substitutions:
   _PROJECT_ID: ""
   _APP_NAME: ""
@@ -291,9 +291,11 @@ substitutions:
   _VERSION_NAME: "1.0.1"
   _VERSION_CODE: "1"
   _APP_ICON_URL: ""
-  _OUTPUT_GCS_PATH: ""
-  _DEST_BUCKET: ""
+  _PUBLIC_BUCKET: "appbox-public-assets"
+  _PRIVATE_BUCKET: "appbox-private-artifacts"
+  _DEST_BUCKET: "appbox-build-artifacts"
 
+# 타임아웃 (1시간)
 timeout: 3600s
 
 options:
