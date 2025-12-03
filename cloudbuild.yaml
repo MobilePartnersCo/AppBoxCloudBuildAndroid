@@ -253,6 +253,8 @@ substitutions:
   _OUTPUT_GCS_PATH: "gs://my-bucket/output/"
   _DEST_BUCKET: "my-bucket"
 
+timeout: 3600s
+
 options:
   machineType: 'E2_HIGHCPU_8'
   logging: CLOUD_LOGGING_ONLY
