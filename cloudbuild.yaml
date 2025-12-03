@@ -170,9 +170,13 @@ steps:
         echo "📦 Archiving project source..."
         tar -czf /tmp/source_backup.tar.gz --exclude=.git --exclude=.gradle --exclude=app/build .
         
-        TARGET_PATH="${_OUTPUT_GCS_PATH%/}/${_VERSION_NAME}/source/"
-        echo "📤 Uploading source to: $$TARGET_PATH"
-        gsutil cp /tmp/source_backup.tar.gz "$$TARGET_PATH"
+        # 경로 조합 (슬래시 중복 방지 로직 단순화)
+        # _OUTPUT_GCS_PATH는 gs://로 시작해야 함
+        GCS_ROOT="${_OUTPUT_GCS_PATH%/}"
+        TARGET_PATH="$GCS_ROOT/${_VERSION_NAME}/source/"
+        
+        echo "📤 Uploading source to: $TARGET_PATH"
+        gsutil cp /tmp/source_backup.tar.gz "$TARGET_PATH"
 
   # ==================================================================
   # Step 3: 안드로이드 빌드
@@ -211,15 +215,16 @@ steps:
       - |
         echo "🚀 Uploading artifacts..."
         
-        BASE_PATH="${_OUTPUT_GCS_PATH%/}/${_VERSION_NAME}"
-        APK_PATH="$$BASE_PATH/apk/"
-        AAB_PATH="$$BASE_PATH/aab/"
+        GCS_ROOT="${_OUTPUT_GCS_PATH%/}"
+        BASE_PATH="$GCS_ROOT/${_VERSION_NAME}"
+        APK_PATH="$BASE_PATH/apk/"
+        AAB_PATH="$BASE_PATH/aab/"
         
-        echo " - APK Path: $$APK_PATH"
-        echo " - AAB Path: $$AAB_PATH"
+        echo " - APK Path: $APK_PATH"
+        echo " - AAB Path: $AAB_PATH"
         
-        gsutil cp app/build/outputs/apk/release/*.apk "$$APK_PATH"
-        gsutil cp app/build/outputs/bundle/release/*.aab "$$AAB_PATH"
+        gsutil cp app/build/outputs/apk/release/*.apk "$APK_PATH"
+        gsutil cp app/build/outputs/bundle/release/*.aab "$AAB_PATH"
 
 # 변수 정의
 substitutions:
