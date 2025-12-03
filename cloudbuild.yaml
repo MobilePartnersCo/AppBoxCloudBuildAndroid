@@ -1,6 +1,6 @@
 steps:
   # ==================================================================
-  # Step 0: Gradle 캐시 복원
+  # Step 0: Gradle 캐시 복원 (속도 최적화)
   # ==================================================================
   - name: 'gcr.io/cloud-builders/gsutil'
     id: 'Restore Cache'
@@ -15,7 +15,7 @@ steps:
         fi
 
   # ==================================================================
-  # Step 1: config.json 동적 생성
+  # Step 1: config.json 동적 생성 (요청 데이터 -> 파일 변환)
   # ==================================================================
   - name: 'ubuntu'
     id: 'Create Config'
@@ -51,7 +51,7 @@ steps:
         cp app/src/main/res/mipmap-xxxhdpi/ic_launcher.png app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png
 
   # ==================================================================
-  # Step 2-A: 앱 서명키 확인 및 다운로드
+  # Step 2-A: 앱 서명키 확인 및 다운로드 (Secret Manager)
   # ==================================================================
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     id: 'Check/Download Keystore'
@@ -59,7 +59,7 @@ steps:
     args:
       - '-c'
       - |
-        # 변수명을 KEY_SECRET_ID로 변경하고 $$를 붙임
+        # $$를 사용하여 Bash 변수임을 명시
         KEY_SECRET_ID="keystore-${_PROJECT_ID}"
         echo "🔐 Checking Secret Manager for: $$KEY_SECRET_ID"
         
@@ -82,8 +82,8 @@ steps:
         if [ -f /tmp/create_new_keystore ]; then
           echo "🆕 Generating new keystore..."
         
-          # Bash 변수는 $$ 사용
           SALT="mobpa_secret_salt_v1"
+          # Cloud Build 변수와 Bash 변수($$SALT) 혼용
           RAW_HASH=$(echo -n "${_PROJECT_ID}$$SALT" | sha256sum)
           ALIAS="key_$(echo -n $$RAW_HASH | cut -c1-10)"
           PASS="$(echo -n $$RAW_HASH | cut -c11-26)A1!"
@@ -120,7 +120,6 @@ steps:
           KEY_SECRET_ID="keystore-${_PROJECT_ID}"
           echo "📤 Uploading new keystore to Secret Manager..."
         
-          # $$KEY_SECRET_ID 사용
           gcloud secrets create "$$KEY_SECRET_ID" --replication-policy="automatic" || true
           gcloud secrets versions add "$$KEY_SECRET_ID" --data-file="app/keystore.jks"
         
@@ -143,14 +142,12 @@ steps:
           ALIAS=$(cat /tmp/keystore_alias)
           PASS=$(cat /tmp/keystore_pass)
         else
-          # 기존 키 복원 로직
           SALT="mobpa_secret_salt_v1"
           RAW_HASH=$(echo -n "${_PROJECT_ID}$$SALT" | sha256sum)
           ALIAS="key_$(echo -n $$RAW_HASH | cut -c1-10)"
           PASS="$(echo -n $$RAW_HASH | cut -c11-26)A1!"
         fi
         
-        # $$ALIAS, $$PASS 사용
         sed -i "s|__KEYSTORE_PATH__|keystore.jks|g" $$GRADLE_FILE
         sed -i "s|__KEYSTORE_STORE_PASSWORD__|$$PASS|g" $$GRADLE_FILE
         sed -i "s|__KEY_ALIAS__|$$ALIAS|g" $$GRADLE_FILE
@@ -170,13 +167,13 @@ steps:
         echo "📦 Archiving project source..."
         tar -czf /tmp/source_backup.tar.gz --exclude=.git --exclude=.gradle --exclude=app/build .
         
-        # 경로 조합 (슬래시 중복 방지 로직 단순화)
-        # _OUTPUT_GCS_PATH는 gs://로 시작해야 함
-        GCS_ROOT="${_OUTPUT_GCS_PATH%/}"
-        TARGET_PATH="$GCS_ROOT/${_VERSION_NAME}/source/"
+        # [수정됨] 안전한 Bash 변수 처리 ($$ 사용)
+        RAW_GCS_PATH="${_OUTPUT_GCS_PATH}"
+        GCS_ROOT="$${RAW_GCS_PATH%/}"
+        TARGET_PATH="$$GCS_ROOT/${_VERSION_NAME}/source/"
         
-        echo "📤 Uploading source to: $TARGET_PATH"
-        gsutil cp /tmp/source_backup.tar.gz "$TARGET_PATH"
+        echo "📤 Uploading source to: $$TARGET_PATH"
+        gsutil cp /tmp/source_backup.tar.gz "$$TARGET_PATH"
 
   # ==================================================================
   # Step 3: 안드로이드 빌드
@@ -215,16 +212,19 @@ steps:
       - |
         echo "🚀 Uploading artifacts..."
         
-        GCS_ROOT="${_OUTPUT_GCS_PATH%/}"
-        BASE_PATH="$GCS_ROOT/${_VERSION_NAME}"
-        APK_PATH="$BASE_PATH/apk/"
-        AAB_PATH="$BASE_PATH/aab/"
+        # [수정됨] 안전한 Bash 변수 처리 ($$ 사용)
+        RAW_GCS_PATH="${_OUTPUT_GCS_PATH}"
+        GCS_ROOT="$${RAW_GCS_PATH%/}"
         
-        echo " - APK Path: $APK_PATH"
-        echo " - AAB Path: $AAB_PATH"
+        BASE_PATH="$$GCS_ROOT/${_VERSION_NAME}"
+        APK_PATH="$$BASE_PATH/apk/"
+        AAB_PATH="$$BASE_PATH/aab/"
         
-        gsutil cp app/build/outputs/apk/release/*.apk "$APK_PATH"
-        gsutil cp app/build/outputs/bundle/release/*.aab "$AAB_PATH"
+        echo " - APK Path: $$APK_PATH"
+        echo " - AAB Path: $$AAB_PATH"
+        
+        gsutil cp app/build/outputs/apk/release/*.apk "$$APK_PATH"
+        gsutil cp app/build/outputs/bundle/release/*.aab "$$AAB_PATH"
 
 # 변수 정의
 substitutions:
