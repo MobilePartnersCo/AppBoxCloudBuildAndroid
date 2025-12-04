@@ -8,7 +8,7 @@ steps:
     args:
       - '-c'
       - |
-        gsutil cp gs://${_DEST_BUCKET}/cache/gradle_cache.tar.gz /tmp/cache.tar.gz || echo "No cache found"
+        gsutil cp gs://${_PRIVATE_BUCKET}/cache/gradle_cache.tar.gz /tmp/cache.tar.gz || echo "No cache found"
         if [ -f /tmp/cache.tar.gz ]; then
           tar -xzf /tmp/cache.tar.gz -C /root/
           echo "✅ Cache restored."
@@ -255,7 +255,7 @@ steps:
       - |
         echo "💾 Saving Gradle cache..."
         tar -czf /tmp/cache.tar.gz -C /root/ .gradle
-        gsutil cp /tmp/cache.tar.gz gs://${_DEST_BUCKET}/cache/gradle_cache.tar.gz
+        gsutil cp /tmp/cache.tar.gz gs://${_PRIVATE_BUCKET}/cache/gradle_cache.tar.gz
         echo "✅ Cache saved."
 
   # -----------------------------------------------------------------------------
@@ -293,7 +293,6 @@ substitutions:
   _APP_ICON_URL: ""
   _PUBLIC_BUCKET: "appbox-public-assets"
   _PRIVATE_BUCKET: "appbox-private-artifacts"
-  _DEST_BUCKET: "appbox-build-artifacts"
 
 # 타임아웃 (1시간)
 timeout: 3600s
