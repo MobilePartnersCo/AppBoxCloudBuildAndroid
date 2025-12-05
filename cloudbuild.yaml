@@ -1,281 +1,205 @@
 steps:
   # ============================================================================
-  # [병렬 그룹 1] 준비 작업 동시 시작
+  # [Step 0] 통합 환경 설정 (Setup & Prepare)
+  # - 도커 이미지 다운로드 오버헤드를 최소화하기 위해 단일 단계에서 병렬로 처리합니다.
+  # - 수행 작업: Config 생성, 아이콘 처리, 키스토어 준비, Gradle 캐시 복원
   # ============================================================================
-
-  # -----------------------------------------------------------------------------
-  # Step 0: Gradle 캐시 복원 및 키 계산 (3번 전략: 캐시 키 로직 추가)
-  # -----------------------------------------------------------------------------
-  - name: 'gcr.io/cloud-builders/gsutil'
-    id: 'Restore Cache'
-    waitFor: ['-']
-    entrypoint: 'bash'
-    args:
-      - '-c'
-      - |
-        mkdir -p /root/.gradle
-
-        # [3번 전략] 의존성 파일들의 변경 여부를 확인하기 위한 해시(Key) 계산
-        # build.gradle.kts나 libs.versions.toml이 변경되면 해시값이 바뀝니다.
-        echo "🔑 Calculating cache key..."
-        cat build.gradle.kts app/build.gradle.kts gradle/libs.versions.toml | sha256sum | awk '{print $1}' > /tmp/current_cache.key
-        
-        # 원격 저장소에 있는 이전 캐시 키 다운로드 (비교용)
-        gsutil cp "gs://${_PRIVATE_BUCKET}/${_PROJECT_ID}/cache/cache.key" /tmp/remote_cache.key || echo "no_remote_key" > /tmp/remote_cache.key
-
-        echo "⬇️ Downloading cache..."
-        gsutil cp gs://${_PRIVATE_BUCKET}/${_PROJECT_ID}/cache/gradle_cache.tar.gz /tmp/cache.tar.gz || echo "No cache found"
-        
-        if [ -f /tmp/cache.tar.gz ]; then
-          tar -xzf /tmp/cache.tar.gz -C /root/
-          echo "✅ Cache restored."
-        fi
-
-  # -----------------------------------------------------------------------------
-  # Step 1: config.json 동적 생성
-  # -----------------------------------------------------------------------------
-  - name: 'ubuntu'
-    id: 'Create Config'
-    waitFor: ['-']
-    env:
-      - 'PROJECT_ID=${_PROJECT_ID}'
-      - 'APP_NAME=${_APP_NAME}'
-      - 'PACKAGE_NAME=${_PACKAGE_NAME}'
-      - 'LOADING_URL=${_LOADING_URL}'
-      - 'VERSION_NAME=${_VERSION_NAME}'
-      - 'VERSION_CODE=${_VERSION_CODE}'
-    script: |
-      echo "🔍 Validating inputs..."
-      if [ -z "$PROJECT_ID" ]; then echo "❌ Error: PROJECT_ID missing"; exit 1; fi
-      if [ -z "$APP_NAME" ]; then echo "❌ Error: APP_NAME missing"; exit 1; fi
-      
-      cat <<EOF > app/config.json
-      {
-        "projectId": "$PROJECT_ID",
-        "appName": "$APP_NAME",
-        "packageName": "$PACKAGE_NAME",
-        "loadingUrl": "$LOADING_URL",
-        "appVersionName": "$VERSION_NAME",
-        "appVersionCode": $VERSION_CODE
-      }
-      EOF
-
-  # -----------------------------------------------------------------------------
-  # Step 2: 앱 아이콘 생성 (최적화: 커스텀 이미지 사용)
-  # -----------------------------------------------------------------------------
-  # [수정됨] ubuntu -> android-builder 이미지 사용 (apt-get 설치 과정 제거)
   - name: 'asia-northeast3-docker.pkg.dev/appbox-479702/appbox-artifact-registry/android-builder:latest'
-    id: 'Download & Process Icons'
-    waitFor: ['-']
+    id: 'Setup Environment'
+    waitFor: ['-'] # 즉시 시작
     entrypoint: 'bash'
     args:
       - '-c'
       - |
-        # apt-get install 과정 삭제됨 (이미지에 포함됨)
+        echo "🚀 Starting Setup..."
         
-        if [ -z "${_APP_ICON_URL}" ]; then echo "❌ Error: _APP_ICON_URL missing"; exit 1; fi
+        # ----------------------------------------------------------------------
+        # 1. [Background] app/config.json 생성
+        # ----------------------------------------------------------------------
+        (
+            echo "🔍 Creating Config..."
+            cat <<EOF > app/config.json
+        {
+          "projectId": "${_PROJECT_ID}",
+          "appName": "${_APP_NAME}",
+          "packageName": "${_PACKAGE_NAME}",
+          "loadingUrl": "${_LOADING_URL}",
+          "appVersionName": "${_VERSION_NAME}",
+          "appVersionCode": ${_VERSION_CODE}
+        }
+        EOF
+        ) &
         
-        echo "⬇️ Downloading icon..."
-        if ! curl -f -L -o /tmp/icon_origin "${_APP_ICON_URL}"; then
-           echo "❌ Error: Download failed"
-           exit 1
-        fi
+        # ----------------------------------------------------------------------
+        # 2. [Background] 앱 아이콘 다운로드 및 리사이징 (ImageMagick)
+        # ----------------------------------------------------------------------
+        (
+            if [ -n "${_APP_ICON_URL}" ]; then
+                echo "⬇️ Downloading icon..."
+                mkdir -p /tmp/icons
+                curl -f -L -o /tmp/icons/icon_origin "${_APP_ICON_URL}" || echo "Icon download failed"
+                convert /tmp/icons/icon_origin -resize 512x512! /tmp/icons/icon_master.png
         
-        echo "🎨 Creating Icons..."
-        convert /tmp/icon_origin -resize 512x512! /tmp/icon_master.png
-        
-        ICONS="48:mipmap-mdpi 72:mipmap-hdpi 96:mipmap-xhdpi 144:mipmap-xxhdpi 192:mipmap-xxxhdpi"
-        
-        for config in $$ICONS; do
-            SIZE=$${config%%:*}
-            FOLDER=$${config##*:}
-            TARGET_DIR="app/src/main/res/$$FOLDER"
-            mkdir -p "$$TARGET_DIR"
-        
-            # 사각형 아이콘
-            convert /tmp/icon_master.png -resize "$${SIZE}x$${SIZE}!" "$$TARGET_DIR/ic_launcher.png"
-        
-            # 원형 아이콘
-            CENTER=$((SIZE / 2))
-            convert /tmp/icon_master.png -resize "$${SIZE}x$${SIZE}!" \
-              -alpha set -gravity center \
-              \( +clone -threshold -1 -negate -fill white -draw "circle $$CENTER,$$CENTER $$CENTER,0" \) \
-              -alpha off -compose copy_opacity -composite \
-              "$$TARGET_DIR/ic_launcher_round.png"
-        done
-        echo "✅ Icons generated."
+                ICONS="48:mipmap-mdpi 72:mipmap-hdpi 96:mipmap-xhdpi 144:mipmap-xxhdpi 192:mipmap-xxxhdpi"
+                for config in $$ICONS; do
+                    (
+                        SIZE=$${config%%:*}
+                        FOLDER=$${config##*:}
+                        TARGET_DIR="app/src/main/res/$$FOLDER"
+                        mkdir -p "$$TARGET_DIR"
+                        convert /tmp/icons/icon_master.png -resize "$$SIZE"x"$$SIZE"! "$$TARGET_DIR/ic_launcher.png"
+                    ) &
+                done
+                wait
+                echo "✅ Icons ready."
+            fi
+        ) &
+        ICON_PID=$!
 
-  # -----------------------------------------------------------------------------
-  # Step 3: 서명 키 확인
-  # -----------------------------------------------------------------------------
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    id: 'Check Keystore'
-    waitFor: ['-']
-    entrypoint: 'bash'
-    args:
-      - '-c'
-      - |
-        KEY_SECRET_ID="keystore-${_PROJECT_ID}"
-        if gcloud secrets versions access latest --secret="$$KEY_SECRET_ID" --out-file="app/keystore.jks"; then
-          echo "✅ Keystore found."
+        # ----------------------------------------------------------------------
+        # 3. [Background] 키스토어 확인/생성 및 Gradle 주입
+        # ----------------------------------------------------------------------
+        (
+            echo "🔑 Processing Keystore..."
+            KEY_SECRET_ID="keystore-${_PROJECT_ID}"
+            GRADLE_FILE="app/build.gradle.kts"
+        
+            # Secret Manager에서 키 확인
+            if ! gcloud secrets versions access latest --secret="$$KEY_SECRET_ID" --out-file="app/keystore.jks" 2>/dev/null; then
+                echo "⚠️ Creating new keystore..."
+                SALT="mobpa_secret_salt_v1"
+                RAW_HASH=$(echo -n "${_PROJECT_ID}$$SALT" | sha256sum)
+                ALIAS="key_$(echo -n $$RAW_HASH | cut -c1-10)"
+                PASS="$(echo -n $$RAW_HASH | cut -c11-26)A1!"
+        
+                keytool -genkeypair -keystore app/keystore.jks -alias "$$ALIAS" -keyalg RSA -keysize 2048 -validity 10000 -storepass "$$PASS" -keypass "$$PASS" -dname "CN=${_APP_NAME}, OU=AppBox, O=MobPa, L=Seoul, C=KR"
+                gcloud secrets create "$$KEY_SECRET_ID" --replication-policy="automatic" 2>/dev/null || true
+                gcloud secrets versions add "$$KEY_SECRET_ID" --data-file="app/keystore.jks"
+            else
+                echo "✅ Keystore fetched."
+                SALT="mobpa_secret_salt_v1"
+                RAW_HASH=$(echo -n "${_PROJECT_ID}$$SALT" | sha256sum)
+                ALIAS="key_$(echo -n $$RAW_HASH | cut -c1-10)"
+                PASS="$(echo -n $$RAW_HASH | cut -c11-26)A1!"
+            fi
+        
+            # Gradle 파일에 키 정보 주입
+            sed -i "s|__KEYSTORE_PATH__|keystore.jks|g" $$GRADLE_FILE
+            sed -i "s|__KEYSTORE_STORE_PASSWORD__|$$PASS|g" $$GRADLE_FILE
+            sed -i "s|__KEY_ALIAS__|$$ALIAS|g" $$GRADLE_FILE
+            sed -i "s|__KEY_PASSWORD__|$$PASS|g" $$GRADLE_FILE
+        ) &
+        KEY_PID=$!
+
+        # ----------------------------------------------------------------------
+        # 4. [Main Thread] Gradle 캐시 복원 (pigz 병렬 압축 해제)
+        # ----------------------------------------------------------------------
+        echo "📦 Restoring Cache..."
+        mkdir -p /workspace/.gradle_cache
+        
+        # 캐시 키 계산 (버전 관리용)
+        cat build.gradle.kts app/build.gradle.kts gradle/libs.versions.toml | echo "cache_v3" | sha256sum | awk '{print $1}' > ./current_cache.key
+        gcloud storage cp "gs://${_PRIVATE_BUCKET}/${_PROJECT_ID}/cache/cache.key" ./remote_cache.key 2>/dev/null || echo "no_remote_key" > ./remote_cache.key
+        
+        # 캐시 다운로드 및 해제
+        if gcloud storage cp "gs://${_PRIVATE_BUCKET}/${_PROJECT_ID}/cache/gradle_cache.tar.gz" /tmp/cache.tar.gz; then
+             tar -I pigz -xf /tmp/cache.tar.gz -C /workspace/ || echo "⚠️ Cache extract failed"
+             echo "✅ Cache restored."
         else
-          echo "⚠️ Keystore not found. Will create."
-          touch create_new_keystore 
+             echo "⚠️ No cache found."
         fi
 
-  # ============================================================================
-  # [시퀀스 그룹] 키스토어 생성 및 주입
-  # ============================================================================
+        # ----------------------------------------------------------------------
+        # 5. 작업 대기 및 유효성 검사
+        # ----------------------------------------------------------------------
+        wait $$ICON_PID
+        wait $$KEY_PID
+        
+        if [ ! -s app/config.json ] || [ ! -s app/keystore.jks ]; then
+            echo "❌ Critical Error: Config or Keystore missing."
+            exit 1
+        fi
+        echo "✅ All preparations complete."
 
-  # -----------------------------------------------------------------------------
-  # Step 4: 서명 키 생성
-  # -----------------------------------------------------------------------------
+  # ============================================================================
+  # [Step 1] 소스 코드 백업 (Archive Source)
+  # - 빌드 결과물 및 캐시 폴더를 제외한 순수 소스코드만 백업합니다.
+  # ============================================================================
   - name: 'asia-northeast3-docker.pkg.dev/appbox-479702/appbox-artifact-registry/android-builder:latest'
-    id: 'Generate Keystore'
-    waitFor: ['Check Keystore']
-    entrypoint: 'bash'
-    args:
-      - '-c'
-      - |
-        if [ -f create_new_keystore ]; then
-          SALT="mobpa_secret_salt_v1"
-          RAW_HASH=$(echo -n "${_PROJECT_ID}$$SALT" | sha256sum)
-          ALIAS="key_$(echo -n $$RAW_HASH | cut -c1-10)"
-          PASS="$(echo -n $$RAW_HASH | cut -c11-26)A1!"
-        
-          keytool -genkeypair -v -keystore app/keystore.jks -alias "$$ALIAS" -keyalg RSA -keysize 2048 -validity 10000 -storepass "$$PASS" -keypass "$$PASS" -dname "CN=${_APP_NAME}, OU=AppBox, O=MobPa, L=Seoul, C=KR"
-          echo "$$ALIAS" > keystore_alias
-          echo "$$PASS" > keystore_pass
-        fi
-
-  # -----------------------------------------------------------------------------
-  # Step 5: 서명 키 업로드
-  # -----------------------------------------------------------------------------
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    id: 'Upload Keystore'
-    waitFor: ['Generate Keystore']
-    entrypoint: 'bash'
-    args:
-      - '-c'
-      - |
-        if [ -f create_new_keystore ]; then
-          KEY_SECRET_ID="keystore-${_PROJECT_ID}"
-          gcloud secrets create "$$KEY_SECRET_ID" --replication-policy="automatic" || true
-          gcloud secrets versions add "$$KEY_SECRET_ID" --data-file="app/keystore.jks"
-        fi
-
-  # -----------------------------------------------------------------------------
-  # Step 7: Gradle 설정에 서명 정보 주입
-  # -----------------------------------------------------------------------------
-  - name: 'ubuntu'
-    id: 'Inject Signing'
-    waitFor: ['Upload Keystore']
-    entrypoint: 'bash'
-    args:
-      - '-c'
-      - |
-        GRADLE_FILE="app/build.gradle.kts"
-        if [ -f create_new_keystore ]; then
-          ALIAS=$(cat keystore_alias)
-          PASS=$(cat keystore_pass)
-        else
-          SALT="mobpa_secret_salt_v1"
-          RAW_HASH=$(echo -n "${_PROJECT_ID}$$SALT" | sha256sum)
-          ALIAS="key_$(echo -n $$RAW_HASH | cut -c1-10)"
-          PASS="$(echo -n $$RAW_HASH | cut -c11-26)A1!"
-        fi
-        sed -i "s|__KEYSTORE_PATH__|keystore.jks|g" $$GRADLE_FILE
-        sed -i "s|__KEYSTORE_STORE_PASSWORD__|$$PASS|g" $$GRADLE_FILE
-        sed -i "s|__KEY_ALIAS__|$$ALIAS|g" $$GRADLE_FILE
-        sed -i "s|__KEY_PASSWORD__|$$PASS|g" $$GRADLE_FILE
-
-  # ============================================================================
-  # [동기화 포인트] 모든 준비물 완료 확인
-  # ============================================================================
-
-  # -----------------------------------------------------------------------------
-  # Step 6: 사전 빌드 점검
-  # -----------------------------------------------------------------------------
-  - name: 'ubuntu'
-    id: 'Pre-Build Check'
-    waitFor: ['Create Config', 'Download & Process Icons', 'Inject Signing']
-    script: |
-      if [ ! -s app/config.json ]; then echo "❌ Error: config.json missing"; exit 1; fi
-      if [ $(ls app/src/main/res/mipmap-xxxhdpi/ic_launcher.* | wc -l) -eq 0 ]; then echo "❌ Error: Icon missing"; exit 1; fi
-      if [ ! -s app/keystore.jks ]; then echo "❌ Error: Keystore missing"; exit 1; fi
-      echo "✅ Ready to build."
-
-  # ============================================================================
-  # [병렬 그룹 2] 빌드 및 아카이브
-  # ============================================================================
-
-  # -----------------------------------------------------------------------------
-  # Step 8: 소스 백업
-  # -----------------------------------------------------------------------------
-  - name: 'gcr.io/cloud-builders/gsutil'
     id: 'Archive Source'
-    waitFor: ['Pre-Build Check']
+    waitFor: ['Setup Environment']
     entrypoint: 'bash'
     args:
       - '-c'
       - |
-        tar -czf /tmp/source_backup.tar.gz --exclude=.git --exclude=.gradle --exclude=app/build \
-          --exclude=create_new_keystore --exclude=keystore_alias --exclude=keystore_pass .
+        tar -I pigz -cf /tmp/source_backup.tar.gz \
+          --exclude='./.git' \
+          --exclude='./.gradle' \
+          --exclude='./.gradle_cache' \
+          --exclude='./app/build' \
+          --exclude='./build' \
+          --exclude='./create_new_keystore' \
+          --exclude='./keystore_alias' \
+          --exclude='./keystore_pass' \
+          .
         
-        TARGET_PATH="gs://${_PRIVATE_BUCKET}/${_PROJECT_ID}/${_VERSION_NAME}/source/"
-        gsutil cp /tmp/source_backup.tar.gz "$$TARGET_PATH"
+        gcloud storage cp /tmp/source_backup.tar.gz "gs://${_PRIVATE_BUCKET}/${_PROJECT_ID}/${_VERSION_NAME}/source/"
 
-  # -----------------------------------------------------------------------------
-  # Step 9: Android 빌드 (메인 작업)
-  # -----------------------------------------------------------------------------
+  # ============================================================================
+  # [Step 2] 안드로이드 빌드 (Build Artifacts)
+  # - Configuration Cache 및 Build Cache를 활용하여 속도를 최적화합니다.
+  # ============================================================================
   - name: 'asia-northeast3-docker.pkg.dev/appbox-479702/appbox-artifact-registry/android-builder:latest'
     id: 'Build Artifacts'
-    waitFor: ['Restore Cache', 'Pre-Build Check']
+    waitFor: ['Setup Environment']
     entrypoint: 'bash'
     env:
-      - 'GRADLE_USER_HOME=/root/.gradle'
+      - 'GRADLE_USER_HOME=/workspace/.gradle_cache'
     args:
       - '-c'
       - |
         chmod +x gradlew
-        ./gradlew assembleRelease bundleRelease --parallel --max-workers=8 --build-cache --no-daemon
+        ./gradlew assembleRelease bundleRelease \
+          -x lintVitalRelease \
+          --parallel \
+          --max-workers=8 \
+          --build-cache \
+          --configuration-cache \
+          --no-daemon
 
   # ============================================================================
-  # [병렬 그룹 3] 마무리 (저장 및 업로드)
+  # [Step 3] 캐시 저장 (Save Cache)
+  # - 의존성 변경이 감지된 경우에만 새로운 캐시를 압축하여 업로드합니다.
   # ============================================================================
-
-  # -----------------------------------------------------------------------------
-  # Step 10: 캐시 저장 (3번 전략: 조건부 업로드 적용)
-  # -----------------------------------------------------------------------------
-  - name: 'gcr.io/cloud-builders/gsutil'
+  - name: 'asia-northeast3-docker.pkg.dev/appbox-479702/appbox-artifact-registry/android-builder:latest'
     id: 'Save Cache'
     waitFor: ['Build Artifacts']
     entrypoint: 'bash'
     args:
       - '-c'
       - |
-        # Step 0에서 생성한 키 비교
-        CURRENT_KEY=$(cat /tmp/current_cache.key)
-        REMOTE_KEY=$(cat /tmp/remote_cache.key)
+        CURRENT_KEY=$(cat ./current_cache.key)
+        REMOTE_KEY=$(cat ./remote_cache.key)
 
-        if [ "$$CURRENT_KEY" == "$$REMOTE_KEY" ]; then
+        if [ "$$CURRENT_KEY" == "$$REMOTE_KEY" ] && [ "$$REMOTE_KEY" != "no_remote_key" ]; then
             echo "✅ Dependencies unchanged. Skipping cache upload."
         else
-            echo "💾 Dependencies changed (Key: $$CURRENT_KEY). Saving new cache..."
-            tar -czf /tmp/cache.tar.gz -C /root/ .gradle \
-              --exclude='daemon' --exclude='wrapper/dists/*/*/some-garbage-file' --exclude='*.lock' --exclude='gc.properties'
+            echo "💾 Dependencies changed. Saving new cache..."
+            if [ -d /workspace/.gradle_cache ]; then
+                tar -I pigz -cf /tmp/cache.tar.gz -C /workspace/ .gradle_cache \
+                  --exclude='daemon' --exclude='wrapper/dists/*/*/some-garbage-file' --exclude='*.lock' --exclude='gc.properties'
         
-            # 캐시 파일 업로드
-            gsutil cp /tmp/cache.tar.gz gs://${_PRIVATE_BUCKET}/${_PROJECT_ID}/cache/gradle_cache.tar.gz
-            # 새로운 키값도 함께 업로드
-            gsutil cp /tmp/current_cache.key gs://${_PRIVATE_BUCKET}/${_PROJECT_ID}/cache/cache.key
-            echo "✅ New cache saved."
+                gcloud storage cp /tmp/cache.tar.gz gs://${_PRIVATE_BUCKET}/${_PROJECT_ID}/cache/gradle_cache.tar.gz
+                gcloud storage cp ./current_cache.key gs://${_PRIVATE_BUCKET}/${_PROJECT_ID}/cache/cache.key
+                echo "✅ New cache saved."
+            fi
         fi
 
-  # -----------------------------------------------------------------------------
-  # Step 11: 결과물 업로드
-  # -----------------------------------------------------------------------------
-  - name: 'gcr.io/cloud-builders/gsutil'
+  # ============================================================================
+  # [Step 4] 결과물 업로드 (Upload Artifacts)
+  # - 생성된 APK와 AAB 파일을 스토리지로 전송합니다.
+  # ============================================================================
+  - name: 'asia-northeast3-docker.pkg.dev/appbox-479702/appbox-artifact-registry/android-builder:latest'
     id: 'Upload Artifacts'
     waitFor: ['Build Artifacts']
     entrypoint: 'bash'
@@ -284,11 +208,9 @@ steps:
       - |
         echo "🚀 Uploading artifacts..."
         BASE_PATH="gs://${_PUBLIC_BUCKET}/${_PROJECT_ID}/${_VERSION_NAME}"
-        APK_PATH="$$BASE_PATH/apk/"
-        AAB_PATH="$$BASE_PATH/aab/"
         
-        gsutil cp app/build/outputs/apk/release/*.apk "$$APK_PATH"
-        gsutil cp app/build/outputs/bundle/release/*.aab "$$AAB_PATH"
+        gcloud storage cp app/build/outputs/apk/release/*.apk "$$BASE_PATH/apk/"
+        gcloud storage cp app/build/outputs/bundle/release/*.aab "$$BASE_PATH/aab/"
 
 substitutions:
   _PROJECT_ID: ""
@@ -298,12 +220,10 @@ substitutions:
   _VERSION_NAME: "1.0.1"
   _VERSION_CODE: "1"
   _APP_ICON_URL: ""
-
   _PUBLIC_BUCKET: "appbox-public-assets"
   _PRIVATE_BUCKET: "appbox-private-assets"
 
 timeout: 3600s
-
 options:
   machineType: 'E2_HIGHCPU_8'
   logging: CLOUD_LOGGING_ONLY
